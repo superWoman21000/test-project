@@ -1,0 +1,66 @@
+name: Syntax Check
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install flake8
+        run: pip install flake8
+
+      - name: Run flake8 and save results
+        run: |
+          flake8 . --format='%(path)s||%(row)d||%(code)s||%(text)s' --output-file=lint_results.txt || true
+          echo "Flake8 finished"
+
+      - name: Debug webhook URL
+        env:
+          N8N_URL: ${{ secrets.N8N_SYNTAX_WEBHOOK }}
+        run: |
+          echo "URL length: ${#N8N_URL}"
+          echo "URL starts with: ${N8N_URL:0:10}"
+
+      - name: Send results to n8n
+        env:
+          N8N_URL: ${{ secrets.N8N_SYNTAX_WEBHOOK }}
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO="${{ github.repository }}"
+          FINDINGS="[]"
+          if [ -f lint_results.txt ] && [ -s lint_results.txt ]; then
+            FINDINGS=$(python3 -c "
+          import sys, json
+          items = []
+          with open('lint_results.txt') as f:
+              for line in f:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  parts = line.split('||')
+                  if len(parts) >= 4:
+                      items.append({
+                          'file_path': parts[0],
+                          'line_number': int(parts[1]) if parts[1].isdigit() else 0,
+                          'code': parts[2],
+                          'message': parts[3]
+                      })
+          print(json.dumps(items))
+          ")
+          fi
+          echo "Sending to: ${N8N_URL:0:30}..."
+          curl -v -X POST "$N8N_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"pr_number\": $PR_NUMBER, \"repo_full_name\": \"$REPO\", \"findings\": $FINDINGS}"
+          echo "Done"
